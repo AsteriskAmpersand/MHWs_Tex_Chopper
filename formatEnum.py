@@ -5,6 +5,7 @@ Created on Thu Mar 25 21:09:41 2021
 @author: AsteriskAmpersand
 """
 import re
+from tex_math import packetSize
 
 AstcRegex = re.compile("(ASTC)([0-9]+)X([0-9]+)(.*)")
 BCRegex = re.compile("(BC[0-9]+H?)(.*)")
@@ -22,59 +23,107 @@ def getBCBPP(BC):
     if "BC6H" in BC: return 16
     if "BC7" in BC: return 16
 
-def formatParse(formatString):
-    astc = AstcRegex.match(formatString)
-    if astc:
-        ASTC,bx,by,f = astc.groups()
-        return (ASTC,int(bx),int(by),f)
-    bc = BCRegex.match(formatString)
-    if bc:
-        BC,f = bc.groups()
-        return (BC,4,4,f)
-    rgb = RGBRegex.match(formatString)
-    if rgb:
-        channels = []
-        bitlen = 0
-        for g in rgb.groups()[:-1]:
-            if g:
-                c,s = RGBChannel.match(str(g)).groups()            
-                channels.append((c,int(s)))
-                bitlen += int(s)
-        bytelen = (bitlen + 7)//8
-        xpacketlen = 16//bytelen
-        ypacketlen = 1
-        return (channels,1,ypacketlen,rgb.groups()[-1])
-    raise ValueError("Unparseable Format Error")
+def decomposeRGBFormat(rgb):
+    channels = []
+    bitlen = 0
+    for g in rgb.groups()[:-1]:
+        if g:
+            c,s = RGBChannel.match(str(g)).groups()            
+            channels.append((c,int(s)))
+            bitlen += int(s)
+    return bitlen,channels
 
-def formatTexelParse(formatString):
+"""
+There's a lot of code here was cleaned up into the singular
+data parse function.
+
+formatParse:
+    base,tx,ty,format
+formatTexelParse = packetTexelparse:
+    base,128//(bytelen*8)*texelX,texelY,channels/format
+packetSizeData:
+    texelX,texelY,bitlen,bytelen
+    
+"""
+
+class formatData():
+    """ Container for Format Texel Information 
+    Members: 
+        tx : Int
+            Number of horizontal pixels per texel. Texel x dimension.
+        ty : Int
+            Number of vertical pixels per texel. Texel y dimension.
+        bitlen : Int
+            Number of bits a texel occupies.
+        bytelen : Int
+            Number of bytes required to store a single texel.
+            If a texel bitlength is not byte aligned, then it rounds up.
+        formatBase : Str
+            Specifies the format family (ASTC, BC, R/G/B/A)
+        formatColor : 
+            Specifies the color format (Eg: BC1Unorm -> Unorm)
+        scanlineMinima :
+            Minimum size in bytes for a capcom scanline of the format.
+    """
+    def __init__(self,formatString):
+        tx,ty,bl,Bl,fb,fs = _packetSizeData(formatString)
+        fmin = scanlineMinima(formatString)
+        self.tx = tx
+        self.ty = ty
+        self.bitlen = bl
+        self.bytelen = Bl
+        self.formatBase = fb
+        self.formatColor = fs
+        self.scanlineMinima = fmin
+    @property
+    def texelSize(self):
+        return self.tx,self.ty
+    @property
+    def pixelPerPacket(self):
+        #(packetSize*8)//bitlen*texelX,texelY
+        return packetSize//self.bytelen*self.tx,self.ty
+    
+def _packetSizeData(formatString):
+    '''X Pixel Count, Y Pixel Count, Bitcount, Bytecount'''
     astc = AstcRegex.match(formatString)
     if astc:
         ASTC,bx,by,f = astc.groups()
-        return (ASTC,int(bx),int(by),f)
+        return bx,by,128,128//8,ASTC,f
     bc = BCRegex.match(formatString)
     if bc:
         BC,f = bc.groups()
-        hcount = 16//getBCBPP(BC)
-        return (BC,4*hcount,4,f)
+        lbytes = getBCBPP(BC)
+        return 4,4,lbytes*8,lbytes,BC,f
     rgb = RGBRegex.match(formatString)
     if rgb:
-        channels = []
-        bitlen = 0
-        for g in rgb.groups()[:-1]:
-            if g:
-                c,s = RGBChannel.match(str(g)).groups()            
-                channels.append((c,int(s)))
-                bitlen += int(s)
+        bitlen,channels = decomposeRGBFormat(rgb)
         bytelen = (bitlen + 7)//8
-        xpacketlen = 16//bytelen
-        ypacketlen = 1
-        return (channels,xpacketlen,ypacketlen,rgb.groups()[-1])
-    raise ValueError("Unparseable Format Error")
-    
-packetTexelparse = formatTexelParse
+        return 1,1,bitlen,bytelen,channels,rgb.groups()[-1]
+
+def packetSizeData(formatString):
+    return formatData(formatString)
+
+def scanlineMinima(formatString):
+    '''X Pixel Count, Y Pixel Count, Bitcount, Bytecount'''
+    astc = AstcRegex.match(formatString)
+    if astc:
+        return 128//8
+    bc = BCRegex.match(formatString)
+    if bc:
+        return 256
+    rgb = RGBRegex.match(formatString)
+    if rgb:
+        bitlen,channels = decomposeRGBFormat(rgb)
+        if bitlen > 32:
+            return 256
+        if len(channels) < 3:
+            return 256
+        else:
+            return 32
+
 
 #RE Engine Swizzable formats
-swizzableFormats = [28,30]#MHRise, ResidentEvilReVerse
+swizzableFormats = [28,30,241106027]#MHRise, ResidentEvilReVerse, MHWilds
 swizzledFormats = []
 
 formatEnum = {
@@ -224,9 +273,3 @@ formatEnum = {
 }
 formatEnum={key.upper():val for key,val in formatEnum.items()}
 reverseFormatEnum = {val:key for key,val in formatEnum.items()}
-
-def packetSize(formatName):
-    if formatName is not str:
-        formatName = formatEnum[formatName]
-    return formatParse(formatName)[1:3]
-    

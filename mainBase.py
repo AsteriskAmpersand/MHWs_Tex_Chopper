@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from tex import convertFromTex, convertToTex
 
-VERSION = 0x1C
+VERSION = 0xe5efc6b
 
 def main():
     for path in sys.argv[1:]:

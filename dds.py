@@ -6,10 +6,12 @@ Created on Wed Mar 31 03:23:06 2021
 """
 import math
 import construct as C
-from formatEnum import formatEnum, reverseFormatEnum, formatParse, formatTexelParse
-from formatEnum import packetTexelparse, swizzableFormats, swizzledFormats
-from tex_math import (CoordinateMapping, getSwizzleSizes,
-                      bitCount, ulog2, ruD, packetSize, dotDivide)
+from formatEnum import formatEnum, reverseFormatEnum, \
+                        packetSizeData, scanlineMinima, \
+                        swizzableFormats, swizzledFormats
+from tex_math import (CoordinateMapping, getSwizzleSizes, product,
+                      bitCount, ulog2, ruD, ruNX, packetSize, dotDivide)
+from gdeflate.gdeflate import GDeflate, GDeflateFlags, GDeflateCompressionLevel, GDeflateError
 # dwPixelFlags
 # {
 DDPF_ALPHAPIXELS = 0x1
@@ -210,7 +212,7 @@ ddsBpps = {key.upper().replace("_", ""): val for key, val in ddsBpps.items()}
 DDS_RESOURCE_MISC_TEXTURECUBE = 0x4
 
 
-def ddsFromTexData(h, w, mmc, count, targetFormat, cubemap, data):
+def ddsFromTexData(h, w, z, mmc, count, targetFormat, cubemap, data):
     bpp = ddsBpps[targetFormat.upper()]
     header = {"magic": 0x20534444,
               "dwSize": 124,
@@ -220,7 +222,7 @@ def ddsFromTexData(h, w, mmc, count, targetFormat, cubemap, data):
               "dwWidth": w,
               # Spec ( w * bpp + 7 ) // 8,
               "dwPitchOrLinearSize": (w*h*bpp)//8,
-              "dwDepth": 1,
+              "dwDepth": z,
               "dwMipMapCount": mmc,
               "dwReserved1": [0]*11,
               "ddpfPixelFormat": {
@@ -299,28 +301,12 @@ def buildFormatString(header):
         return RGBA+"UNORM"
 
 
-def aggregateSuperBlock(texelSize, trueSize):
-    x, y = trueSize
-    tx, ty = texelSize
-    dx, dy = ulog2(ruD(x, tx)*tx), ulog2(ruD(y, ty)*ty)
-    print("DDS: x,y: %d,%d, tx,ty: %d,%d, dx,dy: %d,%d" %
-          (x, y, tx, ty, dx, dy))
-    return min(4, max(dx-3, 0)), min(4, max(dy-3, 0))
-
-
 def trim(binarydata):
     return binarydata.rstrip(b"\x00")
 
-
-def product(listing):
-    cur = 1
-    for element in listing:
-        cur *= element
-    return cur
-
-
+compressor = GDeflate()
 class TextureData():
-    def __init__(self, header, version=0x1C):
+    def __init__(self, header, version=241106027):
         self.mipCount = header.dwMipMapCount
         self.cubemap = (header.ddsCaps[1] & DDSCAPS2_CUBEMAP != 0)*1
         self.version = version
@@ -330,89 +316,93 @@ class TextureData():
             (6 if self.cubemap else 1)
         self.formatName = buildFormatString(header)
         self.x, self.y = header.dwWidth, header.dwHeight
+        self.depth = header.dwDepth
         self.size = self.x, self.y
-        _, mtx, mty, _ = formatParse(self.formatName)
-        _, tx, ty, _ = formatTexelParse(self.formatName)
-        _, ptx, pty, _ = packetTexelparse(self.formatName)
-        self.tx, self.ty = tx, ty
-        self.texelSize = self.tx, self.ty
-        self.mtx, self.mty = mtx, mty
-        self.mTexelSize = self.mtx, self.mty
-        self.packetTexelSize = ptx, pty
-        if version in swizzledFormats:
-            self.sx, self.sy = 0, getSwizzleSizes(
-                self.size, self.packetTexelSize)[1]
-        else:
-            self.sx, self.sy = 0, 0
-        self.superBlockSize = self.sx, self.sy
+        self.formatData = packetSizeData(self.formatName)
 
+    def padding(self,image,ddsSl,capSl,linecount):
+        result = b''
+        for ix in range(linecount):
+            imgData = image[ix*ddsSl:(ix+1)*ddsSl]
+            pad = b'\x00'*(capSl-ddsSl)
+            result += imgData + pad
+        return result
+            
     def parselData(self, data):
         miptex = []
         offset = 0
+        minima = scanlineMinima(self.formatName)
         for tex in range(self.imageCount):
             mips = []
             for mip in range(self.mipCount):
-                xcount, ycount = ruD(
-                    ruD(self.x, 2**mip), self.mtx), ruD(ruD(self.y, 2**mip), self.mty)
+                x,y = ruD(self.x, 2**mip), ruD(self.y, 2**mip)
+                z = ruD(self.depth, 2**mip)
+                xcount, ycount = ruD(x, self.formatData.tx), ruD(y, self.formatData.ty)
                 mpacketSize = ruD(packetSize, round(
-                    product(dotDivide(self.texelSize, self.mTexelSize))))
-                bytelen = xcount*ycount*mpacketSize
-                parsel = (data[offset:offset+bytelen], (xcount, ycount))
+                    product(dotDivide(self.formatData.pixelPerPacket, self.formatData.texelSize))))
+                # texelSize = packetTexelPacking and mTexelSize = tx,ty
+                bytelen = xcount*ycount*z*mpacketSize
+                mipmap = data[offset:offset+bytelen]
+                
+                capcomScanline = ruNX(xcount*mpacketSize,minima)
+                
+                ddsScanline = mpacketSize * xcount
+                paddedMipmap = self.padding(mipmap,ddsScanline,capcomScanline,ycount*z)
+                uncompressedSize = capcomScanline * ycount
+                if x * y >= 64:
+                    compressedPaddedMipmap = compressor.compress(paddedMipmap,GDeflateCompressionLevel.BEST_RATIO)
+                    s = compressor.get_uncompressed_size(compressedPaddedMipmap)
+                    if len(compressedPaddedMipmap) > s:
+                        compressedPaddedMipmap = paddedMipmap
+                else: 
+                    compressedPaddedMipmap = paddedMipmap
+                mipData = compressedPaddedMipmap, uncompressedSize, len(compressedPaddedMipmap), capcomScanline
+                parsel = (mipData, (xcount, ycount))
                 mips.append(parsel)
                 offset += bytelen
-                assert len(parsel[0]) == bytelen
-            miptex.append(mips)
+                #assert len(parsel[0]) == bytelen
+            miptex.append(mips)#add uncompressed and compressed size, divide uncompressed by z for that mip
         self.miptex = miptex
-        self.swizzleParsels()
+        self.packParsels()
         return self.build()
 
-    def swizzleParsels(self):
-        stride = 0x10
-        base = 0x20 + self.swizzable*8 + stride*self.imageCount*self.mipCount
+    def packParsels(self):
+        mipstride = 0x10
+        compressstride = 0x8
+        baseHeader = 0x28
+        mipbase = baseHeader + mipstride*self.imageCount*self.mipCount
+        offset = 0x0
+        mipoffset = 0x0
         tex = []
-        headers = []
+        mipImageHeaders = []
+        compressImageHeaders = []
         for texture in self.miptex:
             mips = []
-            textureHeaders = []
+            mipHeaders = []
+            compressHeaders = []
             for mip, (mipData, texelCount) in enumerate(texture):
-                if self.version in swizzledFormats:
-                    size = dotDivide(self.size, (2**mip, 2**mip))
-                    _, sy = getSwizzleSizes(size, self.packetTexelSize)
-                    swizzleSizes = (0, sy)
-                    cm = CoordinateMapping(
-                        size, self.packetTexelSize, swizzleSizes)
-                    swizzled = cm.swizzle(mipData)
-                    #swizzled = swizzle(paddedMip, superBlockSize, self.texelSize, self.mTexelSize, self.size, mip)
-                    uncompressedSize = len(swizzled)# if packetTexelSize ==
-                    compressedSw = trim(swizzled)
-                    compressedSize = len(compressedSw)
-                    mips.append(compressedSw)
-                    header = {
-                        "mipOffset": base,
-                        "compressedSize": compressedSize,
-                        "uncompressedSize": uncompressedSize,
-                    }
-                    base += compressedSize
-                else:
-                    print(self.formatName)
-                    correction = 1 + 1 *("BC1" in self.formatName or "BC4" in self.formatName)
-                    uncompressedSize = len(mipData)
-                    tx, ty = texelCount
-                    mpacketSize = ruD(packetSize, round(
-                        product(dotDivide(self.texelSize, self.mTexelSize))))
-                    scanlineSize = tx*mpacketSize
-                    mips.append(mipData)
-                    header = {
-                        "mipOffset": base,
-                        "uncompressedSize": uncompressedSize,
-                        "compressedSize": scanlineSize,
-                    }
-                    base += uncompressedSize
-                textureHeaders.append(header)
+                mipmap,uncompressedSize,compressedSize,scanlineSize = mipData
+                tx, ty = texelCount
+                mips.append(mipmap)
+                mipheader = {
+                    "mipOffset": mipbase+mipoffset,
+                    "uncompressedSize": uncompressedSize,
+                    "pitch": scanlineSize,
+                }
+                compressheader = {
+                    "compressedSize":compressedSize,
+                    "compressedOffset":offset,
+                }
+                offset += compressedSize
+                mipoffset += uncompressedSize
+                mipHeaders.append(mipheader)
+                compressHeaders.append(compressheader)
             tex.append(mips)
-            headers.append(textureHeaders)
-        self.swizzledParsels = tex
-        self.headers = headers
+            mipImageHeaders.append(mipHeaders)
+            compressImageHeaders.append(compressHeaders)
+        self.packedParsels = tex
+        self.mheaders = mipImageHeaders
+        self.cheaders = compressImageHeaders
         return
 
     def build(self):
@@ -422,20 +412,27 @@ class TextureData():
         else:
             counts = (self.imageCount << 8) + self.mipCount
         formatting = formatEnum[self.formatName]
-        header = {"magic": "TEX", "version": self.version, "width": self.x, "height": self.y, "depth": 1, "counts": counts,
-                  "format": formatting, "swizzleControl": 1 if swizzled else -1, "cubemapMarker": self.cubemap*4, "unkn04": (0, 0), "NULL0": 0,
-                  "textureHeaders": self.headers}
+        header = {"magic": "TEX", "version": self.version, 
+                  "width": self.x, "height": self.y, "depth": self.depth,
+                  "imageCount":self.imageCount,
+                  "mipSize":self.mipCount<<4,
+                  "format": formatting, 
+                  "swizzleControl": -1, 
+                  "cubemapMarker": self.cubemap*4, "_controlNibbles": 0, 
+                  "NULL0": 0,
+                  "textureHeaders": self.mheaders,
+                  "compressionHeaders": self.cheaders} 
         header["data"] = b''.join(
-            map(lambda x: b''.join(x), self.swizzledParsels))
-        if swizzable:
-            header["swizzleData"] = {"swizzleHeightDepth": self.sy, "swizzleWidth": self.sx,
-                                     "NULL1": 0, "SEVEN": 7 if swizzled else 0, "ONE_1": 1 if swizzled else 0}
-        else:
-            header["swizzleData"] = None
+            map(lambda x: b''.join(x), self.packedParsels))
+        header["swizzleData"] = {"swizzleHeightDepth":0,
+                                "swizzleWidth":0,
+                                "NULL1":0,
+                                "SEVEN":0,
+                                "ONE_1":0,
+                                }
         return header
 
-
-def texHeaderFromDDS(header, data, version=0x1C):
+def texHeaderFromDDS(header, data, version=241106027):
     td = TextureData(header, version)
     return td.parselData(data)
 
@@ -445,4 +442,4 @@ def texHeaderFromDDSFile(filename, salt):
         header = DDSHeader.parse_stream(inf)
         data = inf.read()
         return texHeaderFromDDS(header, data, salt)
-    # missing swizzling
+    
