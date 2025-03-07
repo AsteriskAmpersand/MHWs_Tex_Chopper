@@ -1,8 +1,8 @@
-<img src="https://cdn.discordapp.com/attachments/606154391405199380/828385308672393216/GossHaragIconFull.fw.png" width="150"> 
+<img src="https://raw.githubusercontent.com/AsteriskAmpersand/MHWs_Tex_Chopper/refs/heads/main/MH_Tex_Chop.fw.png" width="150"> 
 
 # Monster Hunter Wilds Tex Chopper  
 
-A Python library and application for converting from MH Wilds textures to DDS and back.
+A Python library and application for converting from MH Wilds textures to DDS and back. [The original library for all non-Wilds RE Engine games is here.](https://github.com/AsteriskAmpersand/MHR_Tex_Chopper/tree/main)
 
 ## Credit
 #### Silvris
