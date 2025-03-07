@@ -201,11 +201,12 @@ convert = convertFromTex
 def _convertToTex(filename,salt = 241106027):
     texHeader = texHeaderFromDDSFile(filename,salt)
     binaryFile = TEXHeader.build(texHeader)
+    return binaryFile
 
 def convertToTex(filename,outf = None,salt = 241106027):
     binaryFile = _convertToTex(filename)
     if outf is None:
-        outf = str(filename).replace(".dds",".tex")
+        outf = str(filename).replace(".dds",".tex.%d"%salt)
     with open(outf,"wb") as tex:
         tex.write(binaryFile)
     return outf

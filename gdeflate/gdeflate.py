@@ -78,10 +78,13 @@ class GDeflate:
                 except OSError:
                     continue
             else:
+                print("Error")
+                err = f"Could not find {dll_name} in any of these locations:\n" + \
+                        "\n".join(f"- {p}" for p in possible_paths) + "\n" + \
+                        '\n'.join(map(str,module_dir.parent.rglob("*")))
                 raise GDeflateError(
-                    f"Could not find {dll_name} in any of these locations:\n" + 
-                    "\n".join(f"- {p}" for p in possible_paths)
-                )
+                    err)
+
         else:
             try:
                 self._dll = ctypes.CDLL(str(dll_path))
