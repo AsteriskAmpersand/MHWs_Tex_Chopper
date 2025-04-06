@@ -114,7 +114,7 @@ def trim(dimensions,data,blockData,scanline):
     #print("_____")
     return result
 
-def BCtoDDS(filename,texhead,blockSize,datablocks):
+def BCtoDDS(texhead,blockSize,datablocks):
     width,height,depth = texhead.width,texhead.height,texhead.depth
     mipLevel = lambda x,i: max(1,x>>i)
     #if texhead.swizzleControl == 1:
@@ -135,7 +135,7 @@ def BCtoDDS(filename,texhead,blockSize,datablocks):
 def toR8G8B8_UNORM(pixelData):
     return b''.join(map(lambda row: b''.join(map(bytes,row)),pixelData))
 
-def ASTCtoDDS(filename,texhead,blockSize,data,f):
+def ASTCtoDDS(texhead,blockSize,data,f):
     bindata = b""
     for tex in data:
         for targetSize,currentSize,texture,packetTexelSize in tex:
@@ -149,21 +149,21 @@ def ASTCtoDDS(filename,texhead,blockSize,data,f):
     result = ddsFromTexData(texhead.height, texhead.width, texhead.depth, mipCount, imageCount, "R8G8B8A8UNORM", cubemap,bindata)
     return result
 
-def exportBlocks(filename,texhead,blockSize,t,f,data):
-    rfilename = filename
+def exportBlocks(texhead,blockSize,t,f,data):
     if "ASTC" in t:
-        f = ASTCtoDDS(rfilename,texhead,blockSize,data,f)
+        f = ASTCtoDDS(texhead,blockSize,data,f)
     elif "BC" in t:
-        f = BCtoDDS(rfilename,texhead,blockSize,data)
+        f = BCtoDDS(texhead,blockSize,data)
     else:
-        f = BCtoDDS(rfilename,texhead,blockSize,data)
+        f = BCtoDDS(texhead,blockSize,data)
     return f
 
 def convertFromTex(filename):
     filename = Path(filename)
     if not filename.exists():
         filename = filename.with_suffix(".tex.28")
-    filedata = _convertFromTex(filename)
+    with open(filename,"rb") as inf:
+        filedata = _convertFromTex(inf)
     output = Path('.'.join(str(filename).split(".")[:2])).with_suffix(".dds")
     with open(output,"wb") as outf:
         outf.write(filedata)
@@ -181,11 +181,10 @@ def decompress(mipData):
     #print("Deflation in process")
     return mipData
 
-def _convertFromTex(filename):
-    header = TEXHeader.parse_file(filename)
+def _convertFromTex(stream):
+    header = TEXHeader.parse_stream(stream)
     if DEBUG:
         print("Tx2: "+ str("%d x %d x %d | %d/%d"%(header.width,header.height,header.depth,header.mipCount,header.imageCount)))
-    filename = str(filename).replace(".19","").replace(".28","")
     formatString = reverseFormatEnum[header.format]
     datablocks = expandBlockData(header,header.swizzleControl == 1)
     fData = packetSizeData(formatString)
@@ -193,20 +192,23 @@ def _convertFromTex(filename):
     typing,formatting 
     plainBlocks = [[decompress(mip) for mip in block] for block in datablocks]
     assert(all((all((len(mip) == mipHeader.uncompressedSize*max(1,(header.depth>>ix)) for ix,(mip,mipHeader) in enumerate(zip(image,imgHeader)))) for image,imgHeader in zip(plainBlocks,header.textureHeaders))))
-    file = exportBlocks(filename,header,packetSizeData(formatString),typing,formatting,plainBlocks)
+    file = exportBlocks(header,packetSizeData(formatString),typing,formatting,plainBlocks)
     return file
 
 convert = convertFromTex
 
-def _convertToTex(filename,salt = 241106027):
-    texHeader = texHeaderFromDDSFile(filename,salt)
+def _convertToTex(stream,salt = 241106027,compress=True,nibbles=0):
+    texHeader = texHeaderFromDDSFile(stream,salt,compress)
+    texHeader["_controlNibbles"] = nibbles
     binaryFile = TEXHeader.build(texHeader)
     return binaryFile
 
-def convertToTex(filename,outf = None,salt = 241106027):
-    binaryFile = _convertToTex(filename)
+def convertToTex(filename,outf = None,salt = 241106027,compress=True,nibbles=0):
+    with open(filename, "rb") as inf:
+        binaryFile = _convertToTex(inf,compress,nibbles=nibbles)
     if outf is None:
         outf = str(filename).replace(".dds",".tex.%d"%salt)
+    #print(filename,outf)
     with open(outf,"wb") as tex:
         tex.write(binaryFile)
     return outf

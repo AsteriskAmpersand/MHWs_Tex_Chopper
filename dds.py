@@ -217,7 +217,7 @@ def ddsFromTexData(h, w, z, mmc, count, targetFormat, cubemap, data):
     header = {"magic": 0x20534444,
               "dwSize": 124,
               # check for absence of mip maps
-              "dwFlags": DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_MIPMAPCOUNT | DDSD_LINEARSIZE,
+              "dwFlags": DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PIXELFORMAT | DDSD_MIPMAPCOUNT | DDSD_LINEARSIZE | DDSD_DEPTH*(z>1),
               "dwHeight": h,
               "dwWidth": w,
               # Spec ( w * bpp + 7 ) // 8,
@@ -240,7 +240,7 @@ def ddsFromTexData(h, w, z, mmc, count, targetFormat, cubemap, data):
               "dwReserved2": 0,
               "dx10Header": {
                   "dxgiFormat": ddsTypeFromName[targetFormat],
-                  "resourceDimension": D3D10_RESOURCE_DIMENSION_TEXTURE2D,
+                  "resourceDimension": D3D10_RESOURCE_DIMENSION_TEXTURE2D if z < 2 else D3D10_RESOURCE_DIMENSION_TEXTURE3D,
                   "miscFlag": DDS_RESOURCE_MISC_TEXTURECUBE if cubemap else 0,
                   "arraySize": count//(6 if cubemap else 1),
                   "miscFlags2": 0,  # should maybe probably actually be calculated
@@ -328,7 +328,7 @@ class TextureData():
             result += imgData + pad
         return result
             
-    def parselData(self, data):
+    def parselData(self, data,compress=True):
         miptex = []
         offset = 0
         minima = scanlineMinima(self.formatName)
@@ -349,10 +349,13 @@ class TextureData():
                 ddsScanline = mpacketSize * xcount
                 paddedMipmap = self.padding(mipmap,ddsScanline,capcomScanline,ycount*z)
                 uncompressedSize = capcomScanline * ycount
-                if x * y >= 64:
-                    compressedPaddedMipmap = compressor.compress(paddedMipmap,GDeflateCompressionLevel.BEST_RATIO)
-                    s = compressor.get_uncompressed_size(compressedPaddedMipmap)
-                    if len(compressedPaddedMipmap) > s:
+                if x * y >= 64 and compress:
+                    try:
+                        compressedPaddedMipmap = compressor.compress(paddedMipmap,GDeflateCompressionLevel.BEST_RATIO)
+                        s = compressor.get_uncompressed_size(compressedPaddedMipmap)
+                        if len(compressedPaddedMipmap) > s:
+                            compressedPaddedMipmap = paddedMipmap
+                    except:
                         compressedPaddedMipmap = paddedMipmap
                 else: 
                     compressedPaddedMipmap = paddedMipmap
@@ -432,14 +435,13 @@ class TextureData():
                                 }
         return header
 
-def texHeaderFromDDS(header, data, version=241106027):
+def texHeaderFromDDS(header, data, version=241106027, compress=True):
     td = TextureData(header, version)
-    return td.parselData(data)
+    return td.parselData(data,compress)
 
 
-def texHeaderFromDDSFile(filename, salt):
-    with open(filename, "rb") as inf:
-        header = DDSHeader.parse_stream(inf)
-        data = inf.read()
-        return texHeaderFromDDS(header, data, salt)
+def texHeaderFromDDSFile(stream, salt,compress=True):
+    header = DDSHeader.parse_stream(stream)
+    data = stream.read()
+    return texHeaderFromDDS(header, data, salt, compress)
     

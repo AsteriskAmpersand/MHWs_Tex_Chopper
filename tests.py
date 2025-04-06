@@ -6,7 +6,7 @@ Created on Thu Mar  6 14:10:25 2025
 """
 import io
 from dds import DDSHeader,texHeaderFromDDS
-from tex import _convertFromTex,TEXHeader
+from tex import _convertFromTex,TEXHeader,_convertToTex
 from gdeflate.gdeflate import GDeflate
 from pathlib import Path
 
@@ -19,7 +19,7 @@ def conversionTest(filename):
     with open(filename,"rb") as inf:
         otex = inf.read()
     #From Tex
-    dds = _convertFromTex(filename)
+    dds = _convertFromTex(otex)
     prefix = "__S__" if "streaming" in str(filename).lower() else ""
     with open("TestFiles/"+prefix+filename.with_suffix(".dds").name,"wb") as outf:
         outf.write(dds)
@@ -37,6 +37,54 @@ def conversionTest(filename):
     with open("TestFiles/"+"__"+prefix+filename.with_suffix(".dds").name,"wb") as outf:
         outf.write(ndds)
     return dds == ndds
+
+def singleTest(filename):
+    if ".dds" in str(filename):
+        with open(filename,"rb") as inf:
+            ddsStream = inf
+            header = DDSHeader.parse_stream(ddsStream)
+            texDDS = texHeaderFromDDS(header, ddsStream.read())
+            tex = TEXHeader.build(texDDS)
+            pass
+    else:
+        dds = _convertFromTex(filename)
+
+def roundTripConversion(filename,compress=False):
+    with open(filename,"rb") as inf:
+        nibread = inf.read(0x1c+0x2)
+        nibbles = int.from_bytes(bytearray(nibread)[0x1c:0x1c+0x2],'little')
+        inf.seek(0)
+        dds = _convertFromTex(inf)
+    tex2 = _convertToTex(io.BytesIO(dds),compress=compress,nibbles=nibbles)
+    return tex2
+
+def globalDecompression(base,nbase,extension = "*.tex.*"):
+    print("Starting Enumeration")
+    op,ln = iter,lambda x: 60365
+    #op,ln = list,len
+    tot = op(base.rglob(extension))
+    print("Starting Processing")
+    for ix,file in enumerate(tot):
+        bdata = roundTripConversion(file,compress=False)
+        nfile = nbase / file.relative_to(base)
+        nfile.parent.mkdir(parents=True, exist_ok=True)
+        with open(nfile,"wb") as outf:
+            outf.write(bdata)
+        if ix%100 == 0:
+            print("%d/%d"%(ix,ln(tot)))
+
+#singleTest(r'C:/Users/Asterisk/Downloads/test.dds')
+#raise
+    
+nbase = Path(r"TestFiles")
+base = Path(r"D:\Wilds\re_chunk_000")
+
+globalDecompression(base,nbase,"*.tex*")
+raise
+
+singleTest(r'C:/Users/Asterisk/Downloads/Atlas_00001.dds')
+raise
+
 
 fails = []
 
